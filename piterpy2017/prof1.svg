@@ -1,0 +1,1610 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="326" onload="init(evt)" viewBox="0 0 1200 326" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs >
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	.func_g:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	var details, searchbtn, matchedtxt, svg;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	// mouse-over for info
+	function s(node) {		// show
+		info = g_to_text(node);
+		details.nodeValue = "Function: " + info;
+	}
+	function c() {			// clear
+		details.nodeValue = ' ';
+	}
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	})
+
+	// functions
+	function find_child(parent, name, attr) {
+		var children = parent.childNodes;
+		for (var i=0; i<children.length;i++) {
+			if (children[i].tagName == name)
+				return (attr != undefined) ? children[i].attributes[attr].value : children[i];
+		}
+		return;
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_"+attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_"+attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_"+attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes["width"].value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes["x"].value = parseFloat(r.attributes["x"].value) +3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2*12*0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x=txt.length-2; x>0; x--) {
+			if (t.getSubStringLength(0, x+2) <= w) {
+				t.textContent = txt.substring(0,x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = (parseFloat(e.attributes["x"].value) - x - 10) * ratio + 10;
+				if(e.tagName == "text") e.attributes["x"].value = find_child(e.parentNode, "rect", "x") + 3;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseFloat(e.attributes["width"].value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_child(c[i], x-10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = 10;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseInt(svg.width.baseVal.value) - (10*2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr["width"].value);
+		var xmin = parseFloat(attr["x"].value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr["y"].value);
+		var ratio = (svg.width.baseVal.value - 2*10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "1.0";
+
+		var el = document.getElementsByTagName("g");
+		for(var i=0;i<el.length;i++){
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a["x"].value);
+			var ew = parseFloat(a["width"].value);
+			// Is it an ancestor
+			if (0 == 0) {
+				var upstack = parseFloat(a["y"].value) > ymin;
+			} else {
+				var upstack = parseFloat(a["y"].value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.style["opacity"] = "0.5";
+					zoom_parent(e);
+					e.onclick = function(e){unzoom(); zoom(this);};
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.style["display"] = "none";
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.style["display"] = "none";
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					e.onclick = function(e){zoom(this);};
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "0.0";
+
+		var el = document.getElementsByTagName("g");
+		for(i=0;i<el.length;i++) {
+			el[i].style["display"] = "block";
+			el[i].style["opacity"] = "1";
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.getElementsByTagName("rect");
+		for (var i=0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.style["opacity"] = "0.1";
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.style["opacity"] = "0.0";
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementsByTagName("g");
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			if (e.attributes["class"].value != "func_g")
+				continue;
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (rect == null) {
+				// the rect might be wrapped in an anchor
+				// if nameattr href is being used
+				if (rect = find_child(e, "a")) {
+				    rect = find_child(r, "rect");
+				}
+			}
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes["width"].value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes["x"].value);
+				orig_save(rect, "fill");
+				rect.attributes["fill"].value =
+				    "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.style["opacity"] = "1.0";
+		searchbtn.firstChild.nodeValue = "Reset Search"
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.style["opacity"] = "1.0";
+		pct = 100 * count / maxwidth;
+		if (pct == 100)
+			pct = "100"
+		else
+			pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+	function searchover(e) {
+		searchbtn.style["opacity"] = "1.0";
+	}
+	function searchout(e) {
+		if (searching) {
+			searchbtn.style["opacity"] = "1.0";
+		} else {
+			searchbtn.style["opacity"] = "0.1";
+		}
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="326.0" fill="url(#background)"  />
+<text text-anchor="middle" x="600.00" y="24" font-size="17" font-family="Verdana" fill="rgb(0,0,0)"  >Flame Graph</text>
+<text text-anchor="" x="10.00" y="309" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="details" > </text>
+<text text-anchor="" x="10.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="unzoom" onclick="unzoom()" style="opacity:0.0;cursor:pointer" >Reset Zoom</text>
+<text text-anchor="" x="1090.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="search" onmouseover="searchover()" onmouseout="searchout()" onclick="search_prompt()" style="opacity:0.1;cursor:pointer" >Search</text>
+<text text-anchor="" x="1090.00" y="309" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="matched" > </text>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:makeRecord:1387 (14 samples, 0.49%)</title><rect x="717.8" y="149" width="5.8" height="15.0" fill="rgb(240,30,53)" rx="2" ry="2" />
+<text text-anchor="" x="720.84" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:291 (8 samples, 0.28%)</title><rect x="687.5" y="133" width="3.2" height="15.0" fill="rgb(211,128,15)" rx="2" ry="2" />
+<text text-anchor="" x="690.45" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:urlunsplit:397 (4 samples, 0.14%)</title><rect x="969.1" y="149" width="1.7" height="15.0" fill="rgb(236,206,9)" rx="2" ry="2" />
+<text text-anchor="" x="972.11" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:getMessage:331 (1 samples, 0.03%)</title><rect x="770.4" y="53" width="0.4" height="15.0" fill="rgb(218,102,4)" rx="2" ry="2" />
+<text text-anchor="" x="773.39" y="63.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_headers_complete:200 (1 samples, 0.03%)</title><rect x="1093.9" y="197" width="0.4" height="15.0" fill="rgb(212,33,54)" rx="2" ry="2" />
+<text text-anchor="" x="1096.92" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:output:207 (95 samples, 3.31%)</title><rect x="466.2" y="181" width="39.0" height="15.0" fill="rgb(223,213,2)" rx="2" ry="2" />
+<text text-anchor="" x="469.15" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/us..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:findCaller:1356 (6 samples, 0.21%)</title><rect x="598.4" y="149" width="2.4" height="15.0" fill="rgb(224,143,1)" rx="2" ry="2" />
+<text text-anchor="" x="601.36" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:emit:981 (3 samples, 0.10%)</title><rect x="867.3" y="101" width="1.2" height="15.0" fill="rgb(215,212,5)" rx="2" ry="2" />
+<text text-anchor="" x="870.29" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/genericpath.py:_splitext:126 (1 samples, 0.03%)</title><rect x="664.9" y="101" width="0.4" height="15.0" fill="rgb(240,190,9)" rx="2" ry="2" />
+<text text-anchor="" x="667.87" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:flush:964 (35 samples, 1.22%)</title><rect x="884.9" y="85" width="14.4" height="15.0" fill="rgb(232,102,12)" rx="2" ry="2" />
+<text text-anchor="" x="887.94" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:102 (2 samples, 0.07%)</title><rect x="983.9" y="213" width="0.8" height="15.0" fill="rgb(211,150,49)" rx="2" ry="2" />
+<text text-anchor="" x="986.89" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:84 (1 samples, 0.03%)</title><rect x="989.6" y="213" width="0.4" height="15.0" fill="rgb(225,107,40)" rx="2" ry="2" />
+<text text-anchor="" x="992.64" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:96 (1 samples, 0.03%)</title><rect x="994.2" y="213" width="0.4" height="15.0" fill="rgb(230,201,39)" rx="2" ry="2" />
+<text text-anchor="" x="997.15" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:271 (3 samples, 0.10%)</title><rect x="974.9" y="197" width="1.2" height="15.0" fill="rgb(220,5,36)" rx="2" ry="2" />
+<text text-anchor="" x="977.86" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:256 (1,019 samples, 35.46%)</title><rect x="556.5" y="197" width="418.4" height="15.0" fill="rgb(221,205,41)" rx="2" ry="2" />
+<text text-anchor="" x="559.48" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/local/lib/python3.5/dist-packages/sanic/server.py:wr..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/asyncio/tasks.py:__del__:85 (1 samples, 0.03%)</title><rect x="1090.6" y="181" width="0.5" height="15.0" fill="rgb(233,14,53)" rx="2" ry="2" />
+<text text-anchor="" x="1093.64" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/threading.py:current_thread:1232 (6 samples, 0.21%)</title><rect x="694.0" y="117" width="2.5" height="15.0" fill="rgb(253,12,54)" rx="2" ry="2" />
+<text text-anchor="" x="697.02" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:filter:715 (1 samples, 0.03%)</title><rect x="754.8" y="101" width="0.4" height="15.0" fill="rgb(207,125,45)" rx="2" ry="2" />
+<text text-anchor="" x="757.79" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:286 (2 samples, 0.07%)</title><rect x="671.9" y="133" width="0.8" height="15.0" fill="rgb(251,58,34)" rx="2" ry="2" />
+<text text-anchor="" x="674.85" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:handle:853 (6 samples, 0.21%)</title><rect x="755.2" y="117" width="2.5" height="15.0" fill="rgb(209,88,20)" rx="2" ry="2" />
+<text text-anchor="" x="758.20" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:output:215 (3 samples, 0.10%)</title><rect x="508.9" y="181" width="1.2" height="15.0" fill="rgb(211,15,52)" rx="2" ry="2" />
+<text text-anchor="" x="511.85" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:format:830 (253 samples, 8.80%)</title><rect x="763.4" y="85" width="103.9" height="15.0" fill="rgb(238,176,45)" rx="2" ry="2" />
+<text text-anchor="" x="766.41" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/lib/pyt..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:273 (27 samples, 0.94%)</title><rect x="629.2" y="133" width="11.0" height="15.0" fill="rgb(244,88,4)" rx="2" ry="2" />
+<text text-anchor="" x="632.15" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:_coerce_args:107 (3 samples, 0.10%)</title><rect x="966.6" y="133" width="1.3" height="15.0" fill="rgb(233,195,37)" rx="2" ry="2" />
+<text text-anchor="" x="969.65" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:usesTime:380 (17 samples, 0.59%)</title><rect x="773.3" y="37" width="6.9" height="15.0" fill="rgb(237,92,51)" rx="2" ry="2" />
+<text text-anchor="" x="776.26" y="47.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:data_received:176 (1 samples, 0.03%)</title><rect x="1189.6" y="213" width="0.4" height="15.0" fill="rgb(236,13,48)" rx="2" ry="2" />
+<text text-anchor="" x="1192.59" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:ip:160 (1 samples, 0.03%)</title><rect x="554.0" y="181" width="0.4" height="15.0" fill="rgb(220,217,8)" rx="2" ry="2" />
+<text text-anchor="" x="557.02" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:isEnabledFor:1521 (8 samples, 0.28%)</title><rect x="576.2" y="165" width="3.3" height="15.0" fill="rgb(232,190,34)" rx="2" ry="2" />
+<text text-anchor="" x="579.19" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:flush:961 (7 samples, 0.24%)</title><rect x="880.4" y="85" width="2.9" height="15.0" fill="rgb(242,43,51)" rx="2" ry="2" />
+<text text-anchor="" x="883.42" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:288 (20 samples, 0.70%)</title><rect x="673.5" y="133" width="8.2" height="15.0" fill="rgb(249,98,22)" rx="2" ry="2" />
+<text text-anchor="" x="676.49" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/inspect.py:isawaitable:212 (8 samples, 0.28%)</title><rect x="379.5" y="197" width="3.3" height="15.0" fill="rgb(224,6,10)" rx="2" ry="2" />
+<text text-anchor="" x="382.52" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:277 (2 samples, 0.07%)</title><rect x="982.7" y="197" width="0.8" height="15.0" fill="rgb(227,78,32)" rx="2" ry="2" />
+<text text-anchor="" x="985.66" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/router.py:get:307 (38 samples, 1.32%)</title><rect x="356.1" y="197" width="15.6" height="15.0" fill="rgb(220,132,45)" rx="2" ry="2" />
+<text text-anchor="" x="359.12" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:_parse_headers:99 (30 samples, 1.04%)</title><rect x="492.8" y="165" width="12.4" height="15.0" fill="rgb(238,76,17)" rx="2" ry="2" />
+<text text-anchor="" x="495.84" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:_parse_headers:101 (1 samples, 0.03%)</title><rect x="466.6" y="165" width="0.4" height="15.0" fill="rgb(214,184,48)" rx="2" ry="2" />
+<text text-anchor="" x="469.56" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:format:826 (3 samples, 0.10%)</title><rect x="762.2" y="85" width="1.2" height="15.0" fill="rgb(234,119,19)" rx="2" ry="2" />
+<text text-anchor="" x="765.18" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_url:182 (1 samples, 0.03%)</title><rect x="1189.2" y="197" width="0.4" height="15.0" fill="rgb(214,142,16)" rx="2" ry="2" />
+<text text-anchor="" x="1192.18" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:output:205 (4 samples, 0.14%)</title><rect x="464.5" y="181" width="1.7" height="15.0" fill="rgb(237,6,26)" rx="2" ry="2" />
+<text text-anchor="" x="467.51" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:&lt;lambda&gt;:149 (10 samples, 0.35%)</title><rect x="594.3" y="133" width="4.1" height="15.0" fill="rgb(211,165,13)" rx="2" ry="2" />
+<text text-anchor="" x="597.25" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:url:223 (27 samples, 0.94%)</title><rect x="910.0" y="181" width="11.1" height="15.0" fill="rgb(247,117,26)" rx="2" ry="2" />
+<text text-anchor="" x="912.99" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:313 (1 samples, 0.03%)</title><rect x="715.4" y="133" width="0.4" height="15.0" fill="rgb(238,207,48)" rx="2" ry="2" />
+<text text-anchor="" x="718.37" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:_coerce_args:107 (9 samples, 0.31%)</title><rect x="951.5" y="149" width="3.6" height="15.0" fill="rgb(224,13,52)" rx="2" ry="2" />
+<text text-anchor="" x="954.45" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:249 (4 samples, 0.14%)</title><rect x="626.7" y="133" width="1.6" height="15.0" fill="rgb(242,169,15)" rx="2" ry="2" />
+<text text-anchor="" x="629.69" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>(idle) (177 samples, 6.16%)</title><rect x="10.0" y="261" width="72.7" height="15.0" fill="rgb(205,202,28)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >(idle)</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:execute_request_handler:234 (88 samples, 3.06%)</title><rect x="1150.2" y="181" width="36.1" height="15.0" fill="rgb(206,141,21)" rx="2" ry="2" />
+<text text-anchor="" x="1153.17" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/us..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:287 (2 samples, 0.07%)</title><rect x="672.7" y="133" width="0.8" height="15.0" fill="rgb(242,15,25)" rx="2" ry="2" />
+<text text-anchor="" x="675.67" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:__init__:56 (1 samples, 0.03%)</title><rect x="1134.2" y="181" width="0.4" height="15.0" fill="rgb(223,184,48)" rx="2" ry="2" />
+<text text-anchor="" x="1137.16" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_header:197 (6 samples, 0.21%)</title><rect x="1091.5" y="197" width="2.4" height="15.0" fill="rgb(233,4,51)" rx="2" ry="2" />
+<text text-anchor="" x="1094.46" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:__init__:62 (10 samples, 0.35%)</title><rect x="1136.2" y="181" width="4.1" height="15.0" fill="rgb(234,65,43)" rx="2" ry="2" />
+<text text-anchor="" x="1139.21" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:path:211 (10 samples, 0.35%)</title><rect x="939.5" y="165" width="4.2" height="15.0" fill="rgb(212,169,46)" rx="2" ry="2" />
+<text text-anchor="" x="942.55" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/posixpath.py:_get_sep:43 (1 samples, 0.03%)</title><rect x="646.8" y="101" width="0.4" height="15.0" fill="rgb(224,215,24)" rx="2" ry="2" />
+<text text-anchor="" x="649.81" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:filter:713 (1 samples, 0.03%)</title><rect x="754.4" y="101" width="0.4" height="15.0" fill="rgb(241,105,43)" rx="2" ry="2" />
+<text text-anchor="" x="757.38" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:info:1279 (802 samples, 27.91%)</title><rect x="579.5" y="181" width="329.3" height="15.0" fill="rgb(252,82,5)" rx="2" ry="2" />
+<text text-anchor="" x="582.47" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/lib/python3.5/logging/__init__.py:info:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:emit:980 (258 samples, 8.98%)</title><rect x="761.4" y="101" width="105.9" height="15.0" fill="rgb(233,132,36)" rx="2" ry="2" />
+<text text-anchor="" x="764.36" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/lib/pyt..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:json:246 (35 samples, 1.22%)</title><rect x="395.5" y="181" width="14.4" height="15.0" fill="rgb(246,214,2)" rx="2" ry="2" />
+<text text-anchor="" x="398.53" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:callHandlers:1487 (400 samples, 13.92%)</title><rect x="740.0" y="133" width="164.2" height="15.0" fill="rgb(248,141,41)" rx="2" ry="2" />
+<text text-anchor="" x="743.01" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/lib/python3.5/lo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:284 (1 samples, 0.03%)</title><rect x="671.0" y="133" width="0.4" height="15.0" fill="rgb(249,47,49)" rx="2" ry="2" />
+<text text-anchor="" x="674.03" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:283 (1 samples, 0.03%)</title><rect x="670.6" y="133" width="0.4" height="15.0" fill="rgb(254,39,39)" rx="2" ry="2" />
+<text text-anchor="" x="673.62" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/genericpath.py:_splitext:127 (1 samples, 0.03%)</title><rect x="665.3" y="101" width="0.4" height="15.0" fill="rgb(252,15,37)" rx="2" ry="2" />
+<text text-anchor="" x="668.28" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:connection_lost:127 (2 samples, 0.07%)</title><rect x="995.4" y="213" width="0.8" height="15.0" fill="rgb(240,141,22)" rx="2" ry="2" />
+<text text-anchor="" x="998.39" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:__init__:54 (1 samples, 0.03%)</title><rect x="1133.8" y="181" width="0.4" height="15.0" fill="rgb(238,124,46)" rx="2" ry="2" />
+<text text-anchor="" x="1136.75" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:93 (1 samples, 0.03%)</title><rect x="992.9" y="213" width="0.4" height="15.0" fill="rgb(247,28,12)" rx="2" ry="2" />
+<text text-anchor="" x="995.92" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:handle:857 (2 samples, 0.07%)</title><rect x="903.0" y="117" width="0.8" height="15.0" fill="rgb(246,2,10)" rx="2" ry="2" />
+<text text-anchor="" x="906.01" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:254 (18 samples, 0.63%)</title><rect x="547.0" y="197" width="7.4" height="15.0" fill="rgb(225,30,52)" rx="2" ry="2" />
+<text text-anchor="" x="550.04" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_headers_complete:205 (61 samples, 2.12%)</title><rect x="1118.6" y="197" width="25.0" height="15.0" fill="rgb(241,57,28)" rx="2" ry="2" />
+<text text-anchor="" x="1121.56" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:__init__:53 (15 samples, 0.52%)</title><rect x="1127.6" y="181" width="6.2" height="15.0" fill="rgb(236,179,17)" rx="2" ry="2" />
+<text text-anchor="" x="1130.59" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:info:1278 (18 samples, 0.63%)</title><rect x="572.1" y="181" width="7.4" height="15.0" fill="rgb(248,184,21)" rx="2" ry="2" />
+<text text-anchor="" x="575.08" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_header:195 (27 samples, 0.94%)</title><rect x="1080.4" y="197" width="11.1" height="15.0" fill="rgb(220,38,19)" rx="2" ry="2" />
+<text text-anchor="" x="1083.38" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:252 (2 samples, 0.07%)</title><rect x="523.2" y="197" width="0.8" height="15.0" fill="rgb(241,103,30)" rx="2" ry="2" />
+<text text-anchor="" x="526.22" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/posixpath.py:splitext:121 (2 samples, 0.07%)</title><rect x="657.9" y="117" width="0.8" height="15.0" fill="rgb(217,37,41)" rx="2" ry="2" />
+<text text-anchor="" x="660.89" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:formatTime:505 (119 samples, 4.14%)</title><rect x="784.3" y="53" width="48.9" height="15.0" fill="rgb(251,204,30)" rx="2" ry="2" />
+<text text-anchor="" x="787.35" y="63.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:247 (3 samples, 0.10%)</title><rect x="453.8" y="197" width="1.3" height="15.0" fill="rgb(226,139,41)" rx="2" ry="2" />
+<text text-anchor="" x="456.83" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:keep_alive:111 (4 samples, 0.14%)</title><rect x="441.1" y="181" width="1.6" height="15.0" fill="rgb(226,131,41)" rx="2" ry="2" />
+<text text-anchor="" x="444.11" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:callHandlers:1484 (8 samples, 0.28%)</title><rect x="735.1" y="133" width="3.3" height="15.0" fill="rgb(229,57,51)" rx="2" ry="2" />
+<text text-anchor="" x="738.08" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:getMessage:328 (7 samples, 0.24%)</title><rect x="767.1" y="53" width="2.9" height="15.0" fill="rgb(207,40,42)" rx="2" ry="2" />
+<text text-anchor="" x="770.11" y="63.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_message_complete:227 (96 samples, 3.34%)</title><rect x="1146.9" y="197" width="39.4" height="15.0" fill="rgb(205,139,3)" rx="2" ry="2" />
+<text text-anchor="" x="1149.89" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/us..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/_weakrefset.py:_remove:41 (1 samples, 0.03%)</title><rect x="1110.3" y="181" width="0.5" height="15.0" fill="rgb(237,85,3)" rx="2" ry="2" />
+<text text-anchor="" x="1113.35" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:execute_request_handler:231 (1 samples, 0.03%)</title><rect x="1148.9" y="181" width="0.5" height="15.0" fill="rgb(215,24,8)" rx="2" ry="2" />
+<text text-anchor="" x="1151.94" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:urlunsplit:405 (6 samples, 0.21%)</title><rect x="972.4" y="149" width="2.5" height="15.0" fill="rgb(220,99,34)" rx="2" ry="2" />
+<text text-anchor="" x="975.39" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:_parse_headers:90 (1 samples, 0.03%)</title><rect x="467.0" y="165" width="0.4" height="15.0" fill="rgb(235,183,47)" rx="2" ry="2" />
+<text text-anchor="" x="469.97" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/log.py:filter:10 (3 samples, 0.10%)</title><rect x="749.9" y="85" width="1.2" height="15.0" fill="rgb(235,15,47)" rx="2" ry="2" />
+<text text-anchor="" x="752.86" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:urlunsplit:395 (13 samples, 0.45%)</title><rect x="963.4" y="149" width="5.3" height="15.0" fill="rgb(238,105,49)" rx="2" ry="2" />
+<text text-anchor="" x="966.36" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:findCaller:1358 (9 samples, 0.31%)</title><rect x="600.8" y="149" width="3.7" height="15.0" fill="rgb(212,125,20)" rx="2" ry="2" />
+<text text-anchor="" x="603.82" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:301 (1 samples, 0.03%)</title><rect x="701.8" y="133" width="0.4" height="15.0" fill="rgb(230,106,11)" rx="2" ry="2" />
+<text text-anchor="" x="704.82" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/weakref.py:__setitem__:158 (80 samples, 2.78%)</title><rect x="308.5" y="213" width="32.8" height="15.0" fill="rgb(250,209,0)" rx="2" ry="2" />
+<text text-anchor="" x="311.49" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/u..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:handle_request:527 (12 samples, 0.42%)</title><rect x="430.4" y="213" width="5.0" height="15.0" fill="rgb(218,68,51)" rx="2" ry="2" />
+<text text-anchor="" x="433.43" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:_coerce_args:113 (3 samples, 0.10%)</title><rect x="958.8" y="149" width="1.3" height="15.0" fill="rgb(212,133,22)" rx="2" ry="2" />
+<text text-anchor="" x="961.84" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:output:220 (3 samples, 0.10%)</title><rect x="510.1" y="181" width="1.2" height="15.0" fill="rgb(231,134,19)" rx="2" ry="2" />
+<text text-anchor="" x="513.08" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:310 (10 samples, 0.35%)</title><rect x="710.0" y="133" width="4.1" height="15.0" fill="rgb(248,69,54)" rx="2" ry="2" />
+<text text-anchor="" x="713.03" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:execute_request_handler:230 (2 samples, 0.07%)</title><rect x="1148.1" y="181" width="0.8" height="15.0" fill="rgb(208,64,17)" rx="2" ry="2" />
+<text text-anchor="" x="1151.12" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_headers_complete:204 (8 samples, 0.28%)</title><rect x="1115.3" y="197" width="3.3" height="15.0" fill="rgb(227,180,13)" rx="2" ry="2" />
+<text text-anchor="" x="1118.27" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/asyncio/tasks.py:__del__:93 (5 samples, 0.17%)</title><rect x="305.6" y="213" width="2.1" height="15.0" fill="rgb(215,225,13)" rx="2" ry="2" />
+<text text-anchor="" x="308.62" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:makeRecord:1389 (7 samples, 0.24%)</title><rect x="723.6" y="149" width="2.9" height="15.0" fill="rgb(218,51,38)" rx="2" ry="2" />
+<text text-anchor="" x="726.58" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:connection_made:121 (4 samples, 0.14%)</title><rect x="1003.2" y="213" width="1.6" height="15.0" fill="rgb(220,81,31)" rx="2" ry="2" />
+<text text-anchor="" x="1006.19" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:isEnabledFor:1519 (5 samples, 0.17%)</title><rect x="574.1" y="165" width="2.1" height="15.0" fill="rgb(243,191,1)" rx="2" ry="2" />
+<text text-anchor="" x="577.13" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:85 (1 samples, 0.03%)</title><rect x="990.0" y="213" width="0.5" height="15.0" fill="rgb(225,35,5)" rx="2" ry="2" />
+<text text-anchor="" x="993.05" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:handle:851 (31 samples, 1.08%)</title><rect x="742.5" y="117" width="12.7" height="15.0" fill="rgb(209,34,8)" rx="2" ry="2" />
+<text text-anchor="" x="745.47" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:105 (1 samples, 0.03%)</title><rect x="986.8" y="213" width="0.4" height="15.0" fill="rgb(251,151,0)" rx="2" ry="2" />
+<text text-anchor="" x="989.76" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/_weakrefset.py:_remove:41 (1 samples, 0.03%)</title><rect x="304.4" y="213" width="0.4" height="15.0" fill="rgb(207,118,30)" rx="2" ry="2" />
+<text text-anchor="" x="307.38" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/router.py:get:306 (6 samples, 0.21%)</title><rect x="353.7" y="197" width="2.4" height="15.0" fill="rgb(221,209,0)" rx="2" ry="2" />
+<text text-anchor="" x="356.65" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/genericpath.py:_splitext:132 (1 samples, 0.03%)</title><rect x="670.2" y="101" width="0.4" height="15.0" fill="rgb(238,95,9)" rx="2" ry="2" />
+<text text-anchor="" x="673.21" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:300 (8 samples, 0.28%)</title><rect x="698.5" y="133" width="3.3" height="15.0" fill="rgb(237,67,8)" rx="2" ry="2" />
+<text text-anchor="" x="701.54" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_header:187 (1 samples, 0.03%)</title><rect x="1066.4" y="197" width="0.4" height="15.0" fill="rgb(219,119,46)" rx="2" ry="2" />
+<text text-anchor="" x="1069.42" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:urlunsplit:396 (1 samples, 0.03%)</title><rect x="968.7" y="149" width="0.4" height="15.0" fill="rgb(238,194,0)" rx="2" ry="2" />
+<text text-anchor="" x="971.70" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:makeRecord:1383 (3 samples, 0.10%)</title><rect x="616.4" y="149" width="1.3" height="15.0" fill="rgb(224,176,42)" rx="2" ry="2" />
+<text text-anchor="" x="619.42" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_headers_complete:203 (11 samples, 0.38%)</title><rect x="1110.8" y="197" width="4.5" height="15.0" fill="rgb(238,35,53)" rx="2" ry="2" />
+<text text-anchor="" x="1113.76" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:95 (2 samples, 0.07%)</title><rect x="993.3" y="213" width="0.9" height="15.0" fill="rgb(208,5,52)" rx="2" ry="2" />
+<text text-anchor="" x="996.33" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:90 (1 samples, 0.03%)</title><rect x="991.7" y="213" width="0.4" height="15.0" fill="rgb(248,146,14)" rx="2" ry="2" />
+<text text-anchor="" x="994.69" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:scheme:183 (3 samples, 0.10%)</title><rect x="910.8" y="165" width="1.2" height="15.0" fill="rgb(251,31,1)" rx="2" ry="2" />
+<text text-anchor="" x="913.81" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:_parse_headers:95 (52 samples, 1.81%)</title><rect x="470.7" y="165" width="21.3" height="15.0" fill="rgb(208,72,12)" rx="2" ry="2" />
+<text text-anchor="" x="473.67" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:data_received:154 (3 samples, 0.10%)</title><rect x="1010.2" y="213" width="1.2" height="15.0" fill="rgb(242,25,20)" rx="2" ry="2" />
+<text text-anchor="" x="1013.17" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:emit:984 (58 samples, 2.02%)</title><rect x="879.2" y="101" width="23.8" height="15.0" fill="rgb(219,129,10)" rx="2" ry="2" />
+<text text-anchor="" x="882.19" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:format:383 (36 samples, 1.25%)</title><rect x="851.7" y="37" width="14.8" height="15.0" fill="rgb(209,188,31)" rx="2" ry="2" />
+<text text-anchor="" x="854.68" y="47.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:_parse_headers:96 (2 samples, 0.07%)</title><rect x="492.0" y="165" width="0.8" height="15.0" fill="rgb(252,3,4)" rx="2" ry="2" />
+<text text-anchor="" x="495.02" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:execute_request_handler:233 (2 samples, 0.07%)</title><rect x="1149.4" y="181" width="0.8" height="15.0" fill="rgb(214,141,10)" rx="2" ry="2" />
+<text text-anchor="" x="1152.35" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:92 (1 samples, 0.03%)</title><rect x="992.5" y="213" width="0.4" height="15.0" fill="rgb(205,210,42)" rx="2" ry="2" />
+<text text-anchor="" x="995.51" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:release:811 (1 samples, 0.03%)</title><rect x="903.4" y="101" width="0.4" height="15.0" fill="rgb(230,5,28)" rx="2" ry="2" />
+<text text-anchor="" x="906.42" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:handle:858 (1 samples, 0.03%)</title><rect x="903.8" y="117" width="0.4" height="15.0" fill="rgb(245,63,12)" rx="2" ry="2" />
+<text text-anchor="" x="906.83" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:output:226 (15 samples, 0.52%)</title><rect x="512.1" y="181" width="6.2" height="15.0" fill="rgb(233,103,47)" rx="2" ry="2" />
+<text text-anchor="" x="515.14" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:release:810 (1 samples, 0.03%)</title><rect x="903.0" y="101" width="0.4" height="15.0" fill="rgb(238,85,12)" rx="2" ry="2" />
+<text text-anchor="" x="906.01" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:ip:157 (3 samples, 0.10%)</title><rect x="552.8" y="181" width="1.2" height="15.0" fill="rgb(243,19,53)" rx="2" ry="2" />
+<text text-anchor="" x="555.78" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:100 (1 samples, 0.03%)</title><rect x="983.5" y="213" width="0.4" height="15.0" fill="rgb(213,20,11)" rx="2" ry="2" />
+<text text-anchor="" x="986.48" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:output:211 (9 samples, 0.31%)</title><rect x="505.2" y="181" width="3.7" height="15.0" fill="rgb(231,196,42)" rx="2" ry="2" />
+<text text-anchor="" x="508.16" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:callHandlers:1488 (3 samples, 0.10%)</title><rect x="904.2" y="133" width="1.3" height="15.0" fill="rgb(214,187,0)" rx="2" ry="2" />
+<text text-anchor="" x="907.24" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/posixpath.py:_get_sep:40 (4 samples, 0.14%)</title><rect x="645.2" y="101" width="1.6" height="15.0" fill="rgb(248,6,19)" rx="2" ry="2" />
+<text text-anchor="" x="648.16" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:handle_request:484 (5 samples, 0.17%)</title><rect x="341.3" y="213" width="2.1" height="15.0" fill="rgb(231,119,54)" rx="2" ry="2" />
+<text text-anchor="" x="344.34" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:__init__:57 (3 samples, 0.10%)</title><rect x="1134.6" y="181" width="1.2" height="15.0" fill="rgb(229,187,6)" rx="2" ry="2" />
+<text text-anchor="" x="1137.57" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:106 (2 samples, 0.07%)</title><rect x="987.2" y="213" width="0.8" height="15.0" fill="rgb(247,134,10)" rx="2" ry="2" />
+<text text-anchor="" x="990.17" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/asyncio/futures.py:__del__:205 (1 samples, 0.03%)</title><rect x="307.3" y="197" width="0.4" height="15.0" fill="rgb(222,43,12)" rx="2" ry="2" />
+<text text-anchor="" x="310.26" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:getEffectiveLevel:1511 (1 samples, 0.03%)</title><rect x="579.1" y="149" width="0.4" height="15.0" fill="rgb(230,147,23)" rx="2" ry="2" />
+<text text-anchor="" x="582.06" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/weakref.py:__init__:311 (55 samples, 1.91%)</title><rect x="312.6" y="197" width="22.6" height="15.0" fill="rgb(208,74,16)" rx="2" ry="2" />
+<text text-anchor="" x="315.60" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:handle_request:502 (15 samples, 0.52%)</title><rect x="376.6" y="213" width="6.2" height="15.0" fill="rgb(209,51,38)" rx="2" ry="2" />
+<text text-anchor="" x="379.65" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:connection_lost:128 (14 samples, 0.49%)</title><rect x="996.2" y="213" width="5.8" height="15.0" fill="rgb(241,141,12)" rx="2" ry="2" />
+<text text-anchor="" x="999.21" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:filter:708 (3 samples, 0.10%)</title><rect x="744.5" y="101" width="1.3" height="15.0" fill="rgb(248,29,51)" rx="2" ry="2" />
+<text text-anchor="" x="747.52" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:handle:1424 (8 samples, 0.28%)</title><rect x="728.5" y="149" width="3.3" height="15.0" fill="rgb(212,54,32)" rx="2" ry="2" />
+<text text-anchor="" x="731.51" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:__init__:58 (1 samples, 0.03%)</title><rect x="1135.8" y="181" width="0.4" height="15.0" fill="rgb(222,9,31)" rx="2" ry="2" />
+<text text-anchor="" x="1138.80" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:__init__:67 (2 samples, 0.07%)</title><rect x="1141.6" y="181" width="0.8" height="15.0" fill="rgb(221,228,29)" rx="2" ry="2" />
+<text text-anchor="" x="1144.55" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:release:810 (1 samples, 0.03%)</title><rect x="900.5" y="69" width="0.5" height="15.0" fill="rgb(246,173,4)" rx="2" ry="2" />
+<text text-anchor="" x="903.54" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:url:228 (72 samples, 2.51%)</title><rect x="945.3" y="181" width="29.6" height="15.0" fill="rgb(234,15,14)" rx="2" ry="2" />
+<text text-anchor="" x="948.30" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/u..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/posixpath.py:splitext:116 (1 samples, 0.03%)</title><rect x="657.1" y="117" width="0.4" height="15.0" fill="rgb(239,22,4)" rx="2" ry="2" />
+<text text-anchor="" x="660.07" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:path:211 (15 samples, 0.52%)</title><rect x="365.6" y="181" width="6.1" height="15.0" fill="rgb(242,144,46)" rx="2" ry="2" />
+<text text-anchor="" x="368.56" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:urlunparse:383 (32 samples, 1.11%)</title><rect x="946.9" y="165" width="13.2" height="15.0" fill="rgb(244,85,30)" rx="2" ry="2" />
+<text text-anchor="" x="949.94" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:_encode_body:82 (1 samples, 0.03%)</title><rect x="423.5" y="149" width="0.4" height="15.0" fill="rgb(212,86,40)" rx="2" ry="2" />
+<text text-anchor="" x="426.45" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:get:47 (26 samples, 0.90%)</title><rect x="928.1" y="149" width="10.6" height="15.0" fill="rgb(243,151,39)" rx="2" ry="2" />
+<text text-anchor="" x="931.05" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>./sanic-app.py:test:8 (96 samples, 3.34%)</title><rect x="389.4" y="197" width="39.4" height="15.0" fill="rgb(243,8,6)" rx="2" ry="2" />
+<text text-anchor="" x="392.37" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >./s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:275 (1 samples, 0.03%)</title><rect x="640.2" y="133" width="0.4" height="15.0" fill="rgb(224,225,0)" rx="2" ry="2" />
+<text text-anchor="" x="643.24" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:handle_request:485 (19 samples, 0.66%)</title><rect x="343.4" y="213" width="7.8" height="15.0" fill="rgb(242,3,19)" rx="2" ry="2" />
+<text text-anchor="" x="346.39" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/genericpath.py:_splitext:119 (1 samples, 0.03%)</title><rect x="662.4" y="101" width="0.4" height="15.0" fill="rgb(223,43,5)" rx="2" ry="2" />
+<text text-anchor="" x="665.41" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:handle:855 (353 samples, 12.28%)</title><rect x="758.1" y="117" width="144.9" height="15.0" fill="rgb(220,13,5)" rx="2" ry="2" />
+<text text-anchor="" x="761.07" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/lib/python3.5..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:272 (2 samples, 0.07%)</title><rect x="628.3" y="133" width="0.9" height="15.0" fill="rgb(221,181,54)" rx="2" ry="2" />
+<text text-anchor="" x="631.33" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:makeRecord:1384 (239 samples, 8.32%)</title><rect x="617.7" y="149" width="98.1" height="15.0" fill="rgb(244,201,31)" rx="2" ry="2" />
+<text text-anchor="" x="620.65" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/lib/py..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:_coerce_args:113 (1 samples, 0.03%)</title><rect x="968.3" y="133" width="0.4" height="15.0" fill="rgb(248,110,43)" rx="2" ry="2" />
+<text text-anchor="" x="971.29" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/_weakrefset.py:add:84 (12 samples, 0.42%)</title><rect x="1181.4" y="165" width="4.9" height="15.0" fill="rgb(215,189,12)" rx="2" ry="2" />
+<text text-anchor="" x="1184.38" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/_weakrefset.py:add:82 (3 samples, 0.10%)</title><rect x="1180.1" y="165" width="1.3" height="15.0" fill="rgb(236,109,29)" rx="2" ry="2" />
+<text text-anchor="" x="1183.15" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:format:580 (1 samples, 0.03%)</title><rect x="866.5" y="69" width="0.4" height="15.0" fill="rgb(239,47,17)" rx="2" ry="2" />
+<text text-anchor="" x="869.46" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/weakref.py:__new__:306 (12 samples, 0.42%)</title><rect x="335.2" y="197" width="4.9" height="15.0" fill="rgb(214,131,39)" rx="2" ry="2" />
+<text text-anchor="" x="338.18" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_headers_complete:202 (40 samples, 1.39%)</title><rect x="1094.3" y="197" width="16.5" height="15.0" fill="rgb(215,37,3)" rx="2" ry="2" />
+<text text-anchor="" x="1097.34" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:248 (4 samples, 0.14%)</title><rect x="625.0" y="133" width="1.7" height="15.0" fill="rgb(227,63,9)" rx="2" ry="2" />
+<text text-anchor="" x="628.05" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:acquire:804 (5 samples, 0.17%)</title><rect x="755.6" y="101" width="2.1" height="15.0" fill="rgb(238,169,38)" rx="2" ry="2" />
+<text text-anchor="" x="758.61" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:97 (1 samples, 0.03%)</title><rect x="994.6" y="213" width="0.4" height="15.0" fill="rgb(220,99,18)" rx="2" ry="2" />
+<text text-anchor="" x="997.57" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:output:202 (3 samples, 0.10%)</title><rect x="461.2" y="181" width="1.3" height="15.0" fill="rgb(214,10,1)" rx="2" ry="2" />
+<text text-anchor="" x="464.22" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:_log:1414 (270 samples, 9.39%)</title><rect x="615.6" y="165" width="110.9" height="15.0" fill="rgb(227,67,35)" rx="2" ry="2" />
+<text text-anchor="" x="618.60" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/lib/pyth..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/_weakrefset.py:_remove:44 (2 samples, 0.07%)</title><rect x="304.8" y="213" width="0.8" height="15.0" fill="rgb(208,144,20)" rx="2" ry="2" />
+<text text-anchor="" x="307.79" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:__init__:184 (2 samples, 0.07%)</title><rect x="419.3" y="165" width="0.9" height="15.0" fill="rgb(246,95,30)" rx="2" ry="2" />
+<text text-anchor="" x="422.35" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>./sanic-app.py:&lt;module&gt;:11 (2,697 samples, 93.84%)</title><rect x="82.7" y="261" width="1107.3" height="15.0" fill="rgb(226,73,29)" rx="2" ry="2" />
+<text text-anchor="" x="85.67" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >./sanic-app.py:&lt;module&gt;:11</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:makeRecord:1386 (4 samples, 0.14%)</title><rect x="716.2" y="149" width="1.6" height="15.0" fill="rgb(211,72,51)" rx="2" ry="2" />
+<text text-anchor="" x="719.19" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_header:185 (13 samples, 0.45%)</title><rect x="1061.1" y="197" width="5.3" height="15.0" fill="rgb(213,222,24)" rx="2" ry="2" />
+<text text-anchor="" x="1064.08" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:253 (56 samples, 1.95%)</title><rect x="524.0" y="197" width="23.0" height="15.0" fill="rgb(226,180,36)" rx="2" ry="2" />
+<text text-anchor="" x="527.04" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:_log:1415 (444 samples, 15.45%)</title><rect x="726.5" y="165" width="182.3" height="15.0" fill="rgb(235,107,12)" rx="2" ry="2" />
+<text text-anchor="" x="729.46" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/lib/python3.5/logg..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:244 (32 samples, 1.11%)</title><rect x="438.6" y="197" width="13.2" height="15.0" fill="rgb(253,30,2)" rx="2" ry="2" />
+<text text-anchor="" x="441.64" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:findCaller:1364 (1 samples, 0.03%)</title><rect x="609.9" y="149" width="0.4" height="15.0" fill="rgb(224,3,48)" rx="2" ry="2" />
+<text text-anchor="" x="612.85" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/posixpath.py:splitext:120 (1 samples, 0.03%)</title><rect x="657.5" y="117" width="0.4" height="15.0" fill="rgb(253,165,34)" rx="2" ry="2" />
+<text text-anchor="" x="660.48" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:__init__:65 (3 samples, 0.10%)</title><rect x="1140.3" y="181" width="1.3" height="15.0" fill="rgb(212,124,45)" rx="2" ry="2" />
+<text text-anchor="" x="1143.32" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:connection_made:120 (3 samples, 0.10%)</title><rect x="1002.0" y="213" width="1.2" height="15.0" fill="rgb(217,145,40)" rx="2" ry="2" />
+<text text-anchor="" x="1004.96" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:handle_request:537 (1,328 samples, 46.21%)</title><rect x="438.2" y="213" width="545.3" height="15.0" fill="rgb(252,60,3)" rx="2" ry="2" />
+<text text-anchor="" x="441.23" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/local/lib/python3.5/dist-packages/sanic/app.py:handle_request:537</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:251 (2 samples, 0.07%)</title><rect x="522.4" y="197" width="0.8" height="15.0" fill="rgb(244,45,53)" rx="2" ry="2" />
+<text text-anchor="" x="525.40" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_headers_complete:207 (2 samples, 0.07%)</title><rect x="1143.6" y="197" width="0.8" height="15.0" fill="rgb(251,38,5)" rx="2" ry="2" />
+<text text-anchor="" x="1146.60" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/_weakrefset.py:_remove:44 (1 samples, 0.03%)</title><rect x="1014.7" y="197" width="0.4" height="15.0" fill="rgb(206,99,9)" rx="2" ry="2" />
+<text text-anchor="" x="1017.68" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:format:568 (23 samples, 0.80%)</title><rect x="770.8" y="69" width="9.4" height="15.0" fill="rgb(233,192,26)" rx="2" ry="2" />
+<text text-anchor="" x="773.80" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:data_received:162 (6 samples, 0.21%)</title><rect x="1012.6" y="213" width="2.5" height="15.0" fill="rgb(232,157,22)" rx="2" ry="2" />
+<text text-anchor="" x="1015.63" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/posixpath.py:basename:138 (6 samples, 0.21%)</title><rect x="644.8" y="117" width="2.4" height="15.0" fill="rgb(217,9,19)" rx="2" ry="2" />
+<text text-anchor="" x="647.75" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:output:221 (1 samples, 0.03%)</title><rect x="511.3" y="181" width="0.4" height="15.0" fill="rgb(210,134,41)" rx="2" ry="2" />
+<text text-anchor="" x="514.32" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:filter:707 (1 samples, 0.03%)</title><rect x="731.0" y="133" width="0.4" height="15.0" fill="rgb(230,22,12)" rx="2" ry="2" />
+<text text-anchor="" x="733.97" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:79 (3 samples, 0.10%)</title><rect x="988.0" y="213" width="1.2" height="15.0" fill="rgb(232,111,44)" rx="2" ry="2" />
+<text text-anchor="" x="991.00" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:filter:709 (7 samples, 0.24%)</title><rect x="745.8" y="101" width="2.8" height="15.0" fill="rgb(254,187,53)" rx="2" ry="2" />
+<text text-anchor="" x="748.76" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_header:188 (2 samples, 0.07%)</title><rect x="1066.8" y="197" width="0.8" height="15.0" fill="rgb(227,141,1)" rx="2" ry="2" />
+<text text-anchor="" x="1069.83" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_message_complete:226 (6 samples, 0.21%)</title><rect x="1144.4" y="197" width="2.5" height="15.0" fill="rgb(249,46,24)" rx="2" ry="2" />
+<text text-anchor="" x="1147.43" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:data_received:155 (3 samples, 0.10%)</title><rect x="1011.4" y="213" width="1.2" height="15.0" fill="rgb(220,37,46)" rx="2" ry="2" />
+<text text-anchor="" x="1014.40" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:url:222 (3 samples, 0.10%)</title><rect x="908.8" y="181" width="1.2" height="15.0" fill="rgb(206,50,36)" rx="2" ry="2" />
+<text text-anchor="" x="911.75" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:scheme:187 (1 samples, 0.03%)</title><rect x="912.0" y="165" width="0.4" height="15.0" fill="rgb(234,174,44)" rx="2" ry="2" />
+<text text-anchor="" x="915.04" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:format:570 (45 samples, 1.57%)</title><rect x="848.0" y="69" width="18.5" height="15.0" fill="rgb(231,22,26)" rx="2" ry="2" />
+<text text-anchor="" x="850.99" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:311 (3 samples, 0.10%)</title><rect x="714.1" y="133" width="1.3" height="15.0" fill="rgb(254,204,37)" rx="2" ry="2" />
+<text text-anchor="" x="717.14" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:query_string:215 (1 samples, 0.03%)</title><rect x="944.9" y="165" width="0.4" height="15.0" fill="rgb(244,227,36)" rx="2" ry="2" />
+<text text-anchor="" x="947.89" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:json:247 (46 samples, 1.60%)</title><rect x="409.9" y="181" width="18.9" height="15.0" fill="rgb(230,224,28)" rx="2" ry="2" />
+<text text-anchor="" x="412.90" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:handle_request:520 (1 samples, 0.03%)</title><rect x="428.8" y="213" width="0.4" height="15.0" fill="rgb(226,47,53)" rx="2" ry="2" />
+<text text-anchor="" x="431.79" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:format:567 (16 samples, 0.56%)</title><rect x="764.2" y="69" width="6.6" height="15.0" fill="rgb(252,83,5)" rx="2" ry="2" />
+<text text-anchor="" x="767.23" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:data_received:166 (6 samples, 0.21%)</title><rect x="1039.7" y="213" width="2.5" height="15.0" fill="rgb(241,65,53)" rx="2" ry="2" />
+<text text-anchor="" x="1042.73" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:_log:1413 (4 samples, 0.14%)</title><rect x="614.0" y="165" width="1.6" height="15.0" fill="rgb(239,157,23)" rx="2" ry="2" />
+<text text-anchor="" x="616.96" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:findCaller:1352 (15 samples, 0.52%)</title><rect x="592.2" y="149" width="6.2" height="15.0" fill="rgb(248,9,11)" rx="2" ry="2" />
+<text text-anchor="" x="595.20" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:_coerce_args:106 (7 samples, 0.24%)</title><rect x="948.6" y="149" width="2.9" height="15.0" fill="rgb(236,135,11)" rx="2" ry="2" />
+<text text-anchor="" x="951.58" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:flush:966 (9 samples, 0.31%)</title><rect x="899.3" y="85" width="3.7" height="15.0" fill="rgb(216,26,32)" rx="2" ry="2" />
+<text text-anchor="" x="902.31" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/posixpath.py:normcase:52 (8 samples, 0.28%)</title><rect x="606.6" y="133" width="3.3" height="15.0" fill="rgb(205,206,35)" rx="2" ry="2" />
+<text text-anchor="" x="609.57" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:callHandlers:1492 (1 samples, 0.03%)</title><rect x="907.9" y="133" width="0.4" height="15.0" fill="rgb(213,156,54)" rx="2" ry="2" />
+<text text-anchor="" x="910.93" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:acquire:803 (2 samples, 0.07%)</title><rect x="881.2" y="69" width="0.9" height="15.0" fill="rgb(248,119,26)" rx="2" ry="2" />
+<text text-anchor="" x="884.25" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:keep_alive:113 (17 samples, 0.59%)</title><rect x="444.8" y="181" width="7.0" height="15.0" fill="rgb(236,30,16)" rx="2" ry="2" />
+<text text-anchor="" x="447.80" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:url:225 (12 samples, 0.42%)</title><rect x="938.7" y="181" width="5.0" height="15.0" fill="rgb(228,179,20)" rx="2" ry="2" />
+<text text-anchor="" x="941.73" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:_parse_headers:91 (8 samples, 0.28%)</title><rect x="467.4" y="165" width="3.3" height="15.0" fill="rgb(240,92,19)" rx="2" ry="2" />
+<text text-anchor="" x="470.38" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:urlunparse:386 (36 samples, 1.25%)</title><rect x="960.1" y="165" width="14.8" height="15.0" fill="rgb(216,130,40)" rx="2" ry="2" />
+<text text-anchor="" x="963.08" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:246 (1 samples, 0.03%)</title><rect x="453.4" y="197" width="0.4" height="15.0" fill="rgb(247,64,26)" rx="2" ry="2" />
+<text text-anchor="" x="456.42" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:getMessage:329 (1 samples, 0.03%)</title><rect x="770.0" y="53" width="0.4" height="15.0" fill="rgb(217,198,40)" rx="2" ry="2" />
+<text text-anchor="" x="772.98" y="63.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/genericpath.py:_splitext:124 (2 samples, 0.07%)</title><rect x="664.1" y="101" width="0.8" height="15.0" fill="rgb(233,18,28)" rx="2" ry="2" />
+<text text-anchor="" x="667.05" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:handle_request:503 (112 samples, 3.90%)</title><rect x="382.8" y="213" width="46.0" height="15.0" fill="rgb(210,121,37)" rx="2" ry="2" />
+<text text-anchor="" x="385.80" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:callHandlers:1485 (1 samples, 0.03%)</title><rect x="738.4" y="133" width="0.4" height="15.0" fill="rgb(235,118,30)" rx="2" ry="2" />
+<text text-anchor="" x="741.36" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:__init__:69 (2 samples, 0.07%)</title><rect x="1142.8" y="181" width="0.8" height="15.0" fill="rgb(221,49,34)" rx="2" ry="2" />
+<text text-anchor="" x="1145.78" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:findCaller:1375 (2 samples, 0.07%)</title><rect x="613.1" y="149" width="0.9" height="15.0" fill="rgb(228,149,6)" rx="2" ry="2" />
+<text text-anchor="" x="616.14" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:ip:157 (11 samples, 0.38%)</title><rect x="528.6" y="181" width="4.5" height="15.0" fill="rgb(252,112,21)" rx="2" ry="2" />
+<text text-anchor="" x="531.56" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:83 (1 samples, 0.03%)</title><rect x="989.2" y="213" width="0.4" height="15.0" fill="rgb(219,25,22)" rx="2" ry="2" />
+<text text-anchor="" x="992.23" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:_noop:90 (3 samples, 0.10%)</title><rect x="973.6" y="133" width="1.3" height="15.0" fill="rgb(232,34,25)" rx="2" ry="2" />
+<text text-anchor="" x="976.63" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:98 (1 samples, 0.03%)</title><rect x="995.0" y="213" width="0.4" height="15.0" fill="rgb(222,130,32)" rx="2" ry="2" />
+<text text-anchor="" x="997.98" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/asyncio/futures.py:__del__:202 (2 samples, 0.07%)</title><rect x="306.4" y="197" width="0.9" height="15.0" fill="rgb(242,184,30)" rx="2" ry="2" />
+<text text-anchor="" x="309.44" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:filter:710 (14 samples, 0.49%)</title><rect x="748.6" y="101" width="5.8" height="15.0" fill="rgb(207,53,5)" rx="2" ry="2" />
+<text text-anchor="" x="751.63" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/multiprocessing/process.py:current_process:39 (4 samples, 0.14%)</title><rect x="708.4" y="117" width="1.6" height="15.0" fill="rgb(245,0,18)" rx="2" ry="2" />
+<text text-anchor="" x="711.39" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:urlunsplit:398 (4 samples, 0.14%)</title><rect x="970.8" y="149" width="1.6" height="15.0" fill="rgb(248,5,17)" rx="2" ry="2" />
+<text text-anchor="" x="973.75" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:290 (3 samples, 0.10%)</title><rect x="686.2" y="133" width="1.3" height="15.0" fill="rgb(245,85,14)" rx="2" ry="2" />
+<text text-anchor="" x="689.22" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:findCaller:1374 (1 samples, 0.03%)</title><rect x="612.7" y="149" width="0.4" height="15.0" fill="rgb(245,50,26)" rx="2" ry="2" />
+<text text-anchor="" x="615.73" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:scheme:189 (21 samples, 0.73%)</title><rect x="912.4" y="165" width="8.7" height="15.0" fill="rgb(220,23,26)" rx="2" ry="2" />
+<text text-anchor="" x="915.45" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:formatTime:507 (36 samples, 1.25%)</title><rect x="833.2" y="53" width="14.8" height="15.0" fill="rgb(230,24,45)" rx="2" ry="2" />
+<text text-anchor="" x="836.21" y="63.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_url:180 (4 samples, 0.14%)</title><rect x="1187.5" y="197" width="1.7" height="15.0" fill="rgb(243,143,49)" rx="2" ry="2" />
+<text text-anchor="" x="1190.54" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:_run_request_middleware:646 (3 samples, 0.10%)</title><rect x="350.0" y="197" width="1.2" height="15.0" fill="rgb(249,223,40)" rx="2" ry="2" />
+<text text-anchor="" x="352.96" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:_coerce_args:110 (9 samples, 0.31%)</title><rect x="955.1" y="149" width="3.7" height="15.0" fill="rgb(249,24,45)" rx="2" ry="2" />
+<text text-anchor="" x="958.15" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:findCaller:1359 (1 samples, 0.03%)</title><rect x="604.5" y="149" width="0.4" height="15.0" fill="rgb(221,189,12)" rx="2" ry="2" />
+<text text-anchor="" x="607.52" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:292 (19 samples, 0.66%)</title><rect x="690.7" y="133" width="7.8" height="15.0" fill="rgb(230,15,35)" rx="2" ry="2" />
+<text text-anchor="" x="693.74" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:emit:983 (8 samples, 0.28%)</title><rect x="875.9" y="101" width="3.3" height="15.0" fill="rgb(251,221,34)" rx="2" ry="2" />
+<text text-anchor="" x="878.91" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/genericpath.py:_splitext:123 (3 samples, 0.10%)</title><rect x="662.8" y="101" width="1.3" height="15.0" fill="rgb(241,99,13)" rx="2" ry="2" />
+<text text-anchor="" x="665.82" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:flush:963 (3 samples, 0.10%)</title><rect x="883.7" y="85" width="1.2" height="15.0" fill="rgb(219,132,43)" rx="2" ry="2" />
+<text text-anchor="" x="886.71" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:data_received:170 (359 samples, 12.49%)</title><rect x="1042.2" y="213" width="147.4" height="15.0" fill="rgb(214,51,42)" rx="2" ry="2" />
+<text text-anchor="" x="1045.19" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/local/lib/pyt..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:makeRecord:1385 (1 samples, 0.03%)</title><rect x="715.8" y="149" width="0.4" height="15.0" fill="rgb(239,140,53)" rx="2" ry="2" />
+<text text-anchor="" x="718.78" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/asyncio/tasks.py:__del__:93 (1 samples, 0.03%)</title><rect x="1091.1" y="181" width="0.4" height="15.0" fill="rgb(210,88,8)" rx="2" ry="2" />
+<text text-anchor="" x="1094.05" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:format:569 (165 samples, 5.74%)</title><rect x="780.2" y="69" width="67.8" height="15.0" fill="rgb(237,142,16)" rx="2" ry="2" />
+<text text-anchor="" x="783.24" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/li..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:host:198 (41 samples, 1.43%)</title><rect x="921.9" y="165" width="16.8" height="15.0" fill="rgb(249,81,17)" rx="2" ry="2" />
+<text text-anchor="" x="924.89" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:callHandlers:1491 (6 samples, 0.21%)</title><rect x="905.5" y="133" width="2.4" height="15.0" fill="rgb(218,211,39)" rx="2" ry="2" />
+<text text-anchor="" x="908.47" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:acquire:804 (3 samples, 0.10%)</title><rect x="882.1" y="69" width="1.2" height="15.0" fill="rgb(248,43,23)" rx="2" ry="2" />
+<text text-anchor="" x="885.07" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:handle:1425 (431 samples, 15.00%)</title><rect x="731.8" y="149" width="177.0" height="15.0" fill="rgb(216,156,8)" rx="2" ry="2" />
+<text text-anchor="" x="734.80" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/lib/python3.5/log..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:callHandlers:1483 (2 samples, 0.07%)</title><rect x="734.3" y="133" width="0.8" height="15.0" fill="rgb(225,93,25)" rx="2" ry="2" />
+<text text-anchor="" x="737.26" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/genericpath.py:_splitext:128 (5 samples, 0.17%)</title><rect x="665.7" y="101" width="2.0" height="15.0" fill="rgb(234,7,6)" rx="2" ry="2" />
+<text text-anchor="" x="668.69" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:url:227 (4 samples, 0.14%)</title><rect x="943.7" y="181" width="1.6" height="15.0" fill="rgb(206,168,51)" rx="2" ry="2" />
+<text text-anchor="" x="946.65" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:output:223 (1 samples, 0.03%)</title><rect x="511.7" y="181" width="0.4" height="15.0" fill="rgb(242,13,20)" rx="2" ry="2" />
+<text text-anchor="" x="514.73" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:255 (5 samples, 0.17%)</title><rect x="554.4" y="197" width="2.1" height="15.0" fill="rgb(238,88,23)" rx="2" ry="2" />
+<text text-anchor="" x="557.43" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:91 (1 samples, 0.03%)</title><rect x="992.1" y="213" width="0.4" height="15.0" fill="rgb(233,87,11)" rx="2" ry="2" />
+<text text-anchor="" x="995.10" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:data_received:163 (60 samples, 2.09%)</title><rect x="1015.1" y="213" width="24.6" height="15.0" fill="rgb(243,196,54)" rx="2" ry="2" />
+<text text-anchor="" x="1018.09" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/_weakrefset.py:_remove:41 (2 samples, 0.07%)</title><rect x="1179.3" y="165" width="0.8" height="15.0" fill="rgb(221,131,16)" rx="2" ry="2" />
+<text text-anchor="" x="1182.32" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:formatMessage:539 (39 samples, 1.36%)</title><rect x="850.5" y="53" width="16.0" height="15.0" fill="rgb(248,79,27)" rx="2" ry="2" />
+<text text-anchor="" x="853.45" y="63.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:output:203 (5 samples, 0.17%)</title><rect x="462.5" y="181" width="2.0" height="15.0" fill="rgb(245,58,17)" rx="2" ry="2" />
+<text text-anchor="" x="465.46" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:278 (47 samples, 1.64%)</title><rect x="651.3" y="133" width="19.3" height="15.0" fill="rgb(206,8,3)" rx="2" ry="2" />
+<text text-anchor="" x="654.32" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:87 (2 samples, 0.07%)</title><rect x="990.5" y="213" width="0.8" height="15.0" fill="rgb(254,72,49)" rx="2" ry="2" />
+<text text-anchor="" x="993.46" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/weakref.py:__setitem__:156 (2 samples, 0.07%)</title><rect x="307.7" y="213" width="0.8" height="15.0" fill="rgb(211,159,30)" rx="2" ry="2" />
+<text text-anchor="" x="310.67" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:248 (154 samples, 5.36%)</title><rect x="455.1" y="197" width="63.2" height="15.0" fill="rgb(217,41,4)" rx="2" ry="2" />
+<text text-anchor="" x="458.07" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/l..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:245 (4 samples, 0.14%)</title><rect x="451.8" y="197" width="1.6" height="15.0" fill="rgb(248,66,26)" rx="2" ry="2" />
+<text text-anchor="" x="454.78" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:__init__:68 (1 samples, 0.03%)</title><rect x="1142.4" y="181" width="0.4" height="15.0" fill="rgb(247,157,14)" rx="2" ry="2" />
+<text text-anchor="" x="1145.37" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:__init__:187 (13 samples, 0.45%)</title><rect x="420.2" y="165" width="5.3" height="15.0" fill="rgb(228,81,23)" rx="2" ry="2" />
+<text text-anchor="" x="423.17" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:_log:1403 (58 samples, 2.02%)</title><rect x="590.1" y="165" width="23.9" height="15.0" fill="rgb(206,47,2)" rx="2" ry="2" />
+<text text-anchor="" x="593.15" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_header:193 (6 samples, 0.21%)</title><rect x="1067.6" y="197" width="2.5" height="15.0" fill="rgb(224,79,28)" rx="2" ry="2" />
+<text text-anchor="" x="1070.65" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:277 (26 samples, 0.90%)</title><rect x="640.6" y="133" width="10.7" height="15.0" fill="rgb(252,74,2)" rx="2" ry="2" />
+<text text-anchor="" x="643.65" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:103 (5 samples, 0.17%)</title><rect x="984.7" y="213" width="2.1" height="15.0" fill="rgb(247,145,0)" rx="2" ry="2" />
+<text text-anchor="" x="987.71" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:run:595 (2,697 samples, 93.84%)</title><rect x="82.7" y="245" width="1107.3" height="15.0" fill="rgb(254,79,13)" rx="2" ry="2" />
+<text text-anchor="" x="85.67" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/local/lib/python3.5/dist-packages/sanic/app.py:run:595</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:handle_request:493 (51 samples, 1.77%)</title><rect x="351.2" y="213" width="20.9" height="15.0" fill="rgb(217,78,41)" rx="2" ry="2" />
+<text text-anchor="" x="354.19" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:url:224 (43 samples, 1.50%)</title><rect x="921.1" y="181" width="17.6" height="15.0" fill="rgb(211,113,54)" rx="2" ry="2" />
+<text text-anchor="" x="924.07" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:release:811 (5 samples, 0.17%)</title><rect x="901.0" y="69" width="2.0" height="15.0" fill="rgb(246,202,32)" rx="2" ry="2" />
+<text text-anchor="" x="903.95" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:getLevelName:133 (23 samples, 0.80%)</title><rect x="630.8" y="117" width="9.4" height="15.0" fill="rgb(241,184,18)" rx="2" ry="2" />
+<text text-anchor="" x="633.79" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/posixpath.py:splitext:122 (29 samples, 1.01%)</title><rect x="658.7" y="117" width="11.9" height="15.0" fill="rgb(225,214,49)" rx="2" ry="2" />
+<text text-anchor="" x="661.71" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:callHandlers:1499 (1 samples, 0.03%)</title><rect x="908.3" y="133" width="0.5" height="15.0" fill="rgb(211,75,43)" rx="2" ry="2" />
+<text text-anchor="" x="911.34" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:handle:854 (1 samples, 0.03%)</title><rect x="757.7" y="117" width="0.4" height="15.0" fill="rgb(235,37,51)" rx="2" ry="2" />
+<text text-anchor="" x="760.66" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:289 (11 samples, 0.38%)</title><rect x="681.7" y="133" width="4.5" height="15.0" fill="rgb(221,169,5)" rx="2" ry="2" />
+<text text-anchor="" x="684.70" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:format:584 (1 samples, 0.03%)</title><rect x="866.9" y="69" width="0.4" height="15.0" fill="rgb(229,88,5)" rx="2" ry="2" />
+<text text-anchor="" x="869.88" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (2,874 samples, 100%)</title><rect x="10.0" y="277" width="1180.0" height="15.0" fill="rgb(231,84,47)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:emit:982 (18 samples, 0.63%)</title><rect x="868.5" y="101" width="7.4" height="15.0" fill="rgb(230,226,47)" rx="2" ry="2" />
+<text text-anchor="" x="871.52" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:handle_request:494 (4 samples, 0.14%)</title><rect x="372.1" y="213" width="1.7" height="15.0" fill="rgb(239,192,48)" rx="2" ry="2" />
+<text text-anchor="" x="375.13" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:__init__:193 (1 samples, 0.03%)</title><rect x="428.4" y="165" width="0.4" height="15.0" fill="rgb(250,34,9)" rx="2" ry="2" />
+<text text-anchor="" x="431.38" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:flush:962 (1 samples, 0.03%)</title><rect x="883.3" y="85" width="0.4" height="15.0" fill="rgb(252,72,13)" rx="2" ry="2" />
+<text text-anchor="" x="886.30" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:callHandlers:1486 (3 samples, 0.10%)</title><rect x="738.8" y="133" width="1.2" height="15.0" fill="rgb(219,89,5)" rx="2" ry="2" />
+<text text-anchor="" x="741.78" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:285 (1 samples, 0.03%)</title><rect x="671.4" y="133" width="0.5" height="15.0" fill="rgb(205,92,45)" rx="2" ry="2" />
+<text text-anchor="" x="674.44" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:ip:160 (2 samples, 0.07%)</title><rect x="546.2" y="181" width="0.8" height="15.0" fill="rgb(221,62,49)" rx="2" ry="2" />
+<text text-anchor="" x="549.21" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:_encode_body:84 (4 samples, 0.14%)</title><rect x="423.9" y="149" width="1.6" height="15.0" fill="rgb(243,197,5)" rx="2" ry="2" />
+<text text-anchor="" x="426.86" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_url:179 (3 samples, 0.10%)</title><rect x="1186.3" y="197" width="1.2" height="15.0" fill="rgb(217,139,36)" rx="2" ry="2" />
+<text text-anchor="" x="1189.30" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:findCaller:1360 (12 samples, 0.42%)</title><rect x="604.9" y="149" width="5.0" height="15.0" fill="rgb(242,0,18)" rx="2" ry="2" />
+<text text-anchor="" x="607.93" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:serve:527 (2,697 samples, 93.84%)</title><rect x="82.7" y="229" width="1107.3" height="15.0" fill="rgb(239,48,8)" rx="2" ry="2" />
+<text text-anchor="" x="85.67" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >/usr/local/lib/python3.5/dist-packages/sanic/server.py:serve:527</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:handle_request:526 (3 samples, 0.10%)</title><rect x="429.2" y="213" width="1.2" height="15.0" fill="rgb(228,38,24)" rx="2" ry="2" />
+<text text-anchor="" x="432.20" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:keep_alive:112 (5 samples, 0.17%)</title><rect x="442.7" y="181" width="2.1" height="15.0" fill="rgb(246,209,40)" rx="2" ry="2" />
+<text text-anchor="" x="445.75" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:handle_request:534 (7 samples, 0.24%)</title><rect x="435.4" y="213" width="2.8" height="15.0" fill="rgb(225,76,33)" rx="2" ry="2" />
+<text text-anchor="" x="438.36" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/router.py:get:314 (1 samples, 0.03%)</title><rect x="371.7" y="197" width="0.4" height="15.0" fill="rgb(246,198,48)" rx="2" ry="2" />
+<text text-anchor="" x="374.72" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/request.py:ip:158 (32 samples, 1.11%)</title><rect x="533.1" y="181" width="13.1" height="15.0" fill="rgb(226,38,34)" rx="2" ry="2" />
+<text text-anchor="" x="536.08" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:_noop:90 (1 samples, 0.03%)</title><rect x="963.0" y="149" width="0.4" height="15.0" fill="rgb(217,136,2)" rx="2" ry="2" />
+<text text-anchor="" x="965.95" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/posixpath.py:basename:139 (4 samples, 0.14%)</title><rect x="647.2" y="117" width="1.7" height="15.0" fill="rgb(248,167,44)" rx="2" ry="2" />
+<text text-anchor="" x="650.22" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/threading.py:name:1083 (1 samples, 0.03%)</title><rect x="698.1" y="117" width="0.4" height="15.0" fill="rgb(245,122,28)" rx="2" ry="2" />
+<text text-anchor="" x="701.13" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:__init__:89 (1 samples, 0.03%)</title><rect x="991.3" y="213" width="0.4" height="15.0" fill="rgb(246,86,31)" rx="2" ry="2" />
+<text text-anchor="" x="994.28" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:callHandlers:1482 (3 samples, 0.10%)</title><rect x="733.0" y="133" width="1.3" height="15.0" fill="rgb(234,55,43)" rx="2" ry="2" />
+<text text-anchor="" x="736.03" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:__init__:307 (19 samples, 0.66%)</title><rect x="702.2" y="133" width="7.8" height="15.0" fill="rgb(206,114,36)" rx="2" ry="2" />
+<text text-anchor="" x="705.23" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/posixpath.py:basename:140 (6 samples, 0.21%)</title><rect x="648.9" y="117" width="2.4" height="15.0" fill="rgb(246,160,54)" rx="2" ry="2" />
+<text text-anchor="" x="651.86" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:getEffectiveLevel:1508 (1 samples, 0.03%)</title><rect x="578.6" y="149" width="0.5" height="15.0" fill="rgb(223,123,48)" rx="2" ry="2" />
+<text text-anchor="" x="581.65" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/threading.py:name:1082 (4 samples, 0.14%)</title><rect x="696.5" y="117" width="1.6" height="15.0" fill="rgb(213,52,5)" rx="2" ry="2" />
+<text text-anchor="" x="699.49" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:_run_response_middleware:656 (4 samples, 0.14%)</title><rect x="433.7" y="197" width="1.7" height="15.0" fill="rgb(220,143,6)" rx="2" ry="2" />
+<text text-anchor="" x="436.72" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:_coerce_args:106 (3 samples, 0.10%)</title><rect x="965.4" y="133" width="1.2" height="15.0" fill="rgb(247,179,16)" rx="2" ry="2" />
+<text text-anchor="" x="968.41" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:250 (10 samples, 0.35%)</title><rect x="518.3" y="197" width="4.1" height="15.0" fill="rgb(227,89,18)" rx="2" ry="2" />
+<text text-anchor="" x="521.30" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:write_response:274 (16 samples, 0.56%)</title><rect x="976.1" y="197" width="6.6" height="15.0" fill="rgb(241,198,1)" rx="2" ry="2" />
+<text text-anchor="" x="979.09" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:filter:708 (1 samples, 0.03%)</title><rect x="731.4" y="133" width="0.4" height="15.0" fill="rgb(236,82,17)" rx="2" ry="2" />
+<text text-anchor="" x="734.38" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:usesTime:536 (21 samples, 0.73%)</title><rect x="771.6" y="53" width="8.6" height="15.0" fill="rgb(211,63,6)" rx="2" ry="2" />
+<text text-anchor="" x="774.62" y="63.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/weakref.py:__new__:307 (3 samples, 0.10%)</title><rect x="340.1" y="197" width="1.2" height="15.0" fill="rgb(236,197,10)" rx="2" ry="2" />
+<text text-anchor="" x="343.10" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/genericpath.py:_splitext:118 (2 samples, 0.07%)</title><rect x="661.6" y="101" width="0.8" height="15.0" fill="rgb(215,99,11)" rx="2" ry="2" />
+<text text-anchor="" x="664.59" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/urllib/parse.py:_coerce_args:110 (1 samples, 0.03%)</title><rect x="967.9" y="133" width="0.4" height="15.0" fill="rgb(245,44,18)" rx="2" ry="2" />
+<text text-anchor="" x="970.88" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/genericpath.py:_splitext:129 (6 samples, 0.21%)</title><rect x="667.7" y="101" width="2.5" height="15.0" fill="rgb(210,60,9)" rx="2" ry="2" />
+<text text-anchor="" x="670.75" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/log.py:filter:12 (8 samples, 0.28%)</title><rect x="751.1" y="85" width="3.3" height="15.0" fill="rgb(231,134,40)" rx="2" ry="2" />
+<text text-anchor="" x="754.09" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/response.py:__init__:192 (7 samples, 0.24%)</title><rect x="425.5" y="165" width="2.9" height="15.0" fill="rgb(213,86,6)" rx="2" ry="2" />
+<text text-anchor="" x="428.50" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:callHandlers:1481 (1 samples, 0.03%)</title><rect x="732.6" y="133" width="0.4" height="15.0" fill="rgb(249,146,15)" rx="2" ry="2" />
+<text text-anchor="" x="735.62" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:on_header:194 (25 samples, 0.87%)</title><rect x="1070.1" y="197" width="10.3" height="15.0" fill="rgb(214,208,15)" rx="2" ry="2" />
+<text text-anchor="" x="1073.11" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/server.py:connection_made:122 (13 samples, 0.45%)</title><rect x="1004.8" y="213" width="5.4" height="15.0" fill="rgb(212,128,19)" rx="2" ry="2" />
+<text text-anchor="" x="1007.83" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:handle_request:495 (1 samples, 0.03%)</title><rect x="373.8" y="213" width="0.4" height="15.0" fill="rgb(239,27,37)" rx="2" ry="2" />
+<text text-anchor="" x="376.77" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/lib/python3.5/logging/__init__.py:findCaller:1373 (6 samples, 0.21%)</title><rect x="610.3" y="149" width="2.4" height="15.0" fill="rgb(216,13,30)" rx="2" ry="2" />
+<text text-anchor="" x="613.26" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>/usr/local/lib/python3.5/dist-packages/sanic/app.py:handle_request:501 (6 samples, 0.21%)</title><rect x="374.2" y="213" width="2.4" height="15.0" fill="rgb(209,33,51)" rx="2" ry="2" />
+<text text-anchor="" x="377.18" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+</svg>
